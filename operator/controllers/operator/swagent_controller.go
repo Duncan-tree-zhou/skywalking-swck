@@ -70,7 +70,7 @@ func (r *SwAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// TODO: check namespace annotation "swck-injection=true"
 
 	// setup default values
-	setDefault(swAgent)
+	r.setDefault(swAgent)
 
 	// select pods
 	currentPodList := &corev1.PodList{}
@@ -101,14 +101,9 @@ func (r *SwAgentReconciler) clientPatch(ctx context.Context, currentPod *corev1.
 
 func (r *SwAgentReconciler) patchPod(ctx context.Context, currentPod *corev1.Pod, swAgent *operatorv1alpha1.SwAgent) error {
 	desiredPod := currentPod.DeepCopy()
+
 	// filter target containers
-	var targetContainers []*corev1.Container
-	for _, c := range desiredPod.Spec.Containers {
-		var containerRegExp = regexp.MustCompile(swAgent.Spec.ContainerMatcher)
-		if containerRegExp.MatchString(c.Name) {
-			targetContainers = append(targetContainers, &c)
-		}
-	}
+	targetContainers := r.getMatchedContainers(desiredPod, swAgent)
 
 	if len(targetContainers) > 0 {
 		// deal with shared volume and sw agent configmap
@@ -117,7 +112,7 @@ func (r *SwAgentReconciler) patchPod(ctx context.Context, currentPod *corev1.Pod
 		// deal with initContainer
 		r.setInitContainer(desiredPod, swAgent)
 
-		// todo: deal with target containers
+		// deal with target containers
 		r.setTargetContainers(desiredPod, swAgent)
 
 		// inform api server to patch pod.
@@ -129,6 +124,17 @@ func (r *SwAgentReconciler) patchPod(ctx context.Context, currentPod *corev1.Pod
 	return nil
 }
 
+func (r *SwAgentReconciler) getMatchedContainers(pod *corev1.Pod, swAgent *operatorv1alpha1.SwAgent) []*corev1.Container {
+	var targetContainers []*corev1.Container
+	for _, c := range pod.Spec.Containers {
+		var containerRegExp = regexp.MustCompile(swAgent.Spec.ContainerMatcher)
+		if containerRegExp.MatchString(c.Name) {
+			targetContainers = append(targetContainers, &c)
+		}
+	}
+	return targetContainers
+}
+
 func (r *SwAgentReconciler) setInitContainer(desiredPod *corev1.Pod, swAgent *operatorv1alpha1.SwAgent) {
 	var initContainer *corev1.Container
 	for _, ic := range desiredPod.Spec.InitContainers {
@@ -136,6 +142,7 @@ func (r *SwAgentReconciler) setInitContainer(desiredPod *corev1.Pod, swAgent *op
 			initContainer = &ic
 		}
 	}
+
 	if nil == initContainer {
 		initContainer = &corev1.Container{
 			Name:    swAgent.Spec.JavaSidecar.Name,
@@ -149,6 +156,7 @@ func (r *SwAgentReconciler) setInitContainer(desiredPod *corev1.Pod, swAgent *op
 				},
 			},
 		}
+		// todo: deal with plugins, args and command.
 		desiredPod.Spec.InitContainers = append(desiredPod.Spec.InitContainers, *initContainer)
 	}
 }
@@ -190,8 +198,52 @@ func (r *SwAgentReconciler) setVolume(desiredPod *corev1.Pod, swAgent *operatorv
 	}
 }
 
-func (r *SwAgentReconciler) setTargetContainers(desiredPod *corev1.Pod, agent *operatorv1alpha1.SwAgent) {
+func (r *SwAgentReconciler) setTargetContainers(desiredPod *corev1.Pod, swAgent *operatorv1alpha1.SwAgent) {
+	containers := r.getMatchedContainers(desiredPod, swAgent)
+	for _, c := range containers {
+		// deal with shared volume
+		var sharedVolumeMounts *corev1.VolumeMount
+		for _, vm := range c.VolumeMounts {
+			if strings.EqualFold(vm.Name, swAgent.Spec.SharedVolume.Name) {
+				sharedVolumeMounts = &vm
+			}
+		}
+		if nil == sharedVolumeMounts {
+			sharedVolumeMounts = &corev1.VolumeMount{
+				Name:      swAgent.Spec.SharedVolume.Name,
+				MountPath: swAgent.Spec.SharedVolume.MountPath,
+			}
+			c.VolumeMounts = append(c.VolumeMounts, *sharedVolumeMounts)
+		}
 
+		// deal with env
+		desiredEnvs := swAgent.Spec.JavaSidecar.Env
+		if !r.setEnvIfExists(&desiredEnvs, "SW_AGENT_COLLECTOR_BACKEND_SERVICES", c.Name) {
+			swAgent.Spec.JavaSidecar.Env = append(swAgent.Spec.JavaSidecar.Env, corev1.EnvVar{
+				Name:  "SW_AGENT_COLLECTOR_BACKEND_SERVICES",
+				Value: c.Name,
+			})
+		}
+
+		var addEnvs []corev1.EnvVar
+		for j, desiredEnv := range desiredEnvs {
+			envExists := false
+			for k, curEnv := range c.Env {
+				if strings.EqualFold(desiredEnv.Name, curEnv.Name) {
+					c.Env[k].Value = desiredEnv.Value
+					envExists = true
+					continue
+				}
+			}
+			if !envExists {
+				addEnvs = append(addEnvs, desiredEnvs[j])
+			}
+		}
+		if len(addEnvs) > 0 {
+			c.Env = append(c.Env, addEnvs...)
+		}
+
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -201,7 +253,7 @@ func (r *SwAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func setDefault(swAgent *operatorv1alpha1.SwAgent) {
+func (r *SwAgentReconciler) setDefault(swAgent *operatorv1alpha1.SwAgent) {
 	if nil != swAgent && len(swAgent.Spec.Selector) == 0 {
 		if len(swAgent.Spec.Selector) == 0 {
 			if swAgent.Spec.Selector == nil {
@@ -209,7 +261,6 @@ func setDefault(swAgent *operatorv1alpha1.SwAgent) {
 			}
 			swAgent.Spec.Selector[LabelAutoUpdate] = "true"
 			swAgent.Spec.Selector[LabelJavaAgent] = "true"
-
 		}
 		if len(swAgent.Spec.JavaSidecar.Args) == 0 {
 			if swAgent.Spec.JavaSidecar.Args == nil {
@@ -224,15 +275,31 @@ func setDefault(swAgent *operatorv1alpha1.SwAgent) {
 			}
 			swAgent.Spec.JavaSidecar.Command = append(swAgent.Spec.JavaSidecar.Command, "sh")
 		}
+		r.setOrAddEnv(swAgent, "JAVA_TOOL_OPTIONS", " -javaagent:/sky/agent/skywalking-agent.jar")
 
 	}
 
-	type Args struct {
-		// The args option of the injected java agent container.
-		Option string `json:"option,omitempty" default:"-c"`
-		// The args command of the injected java agent container.
-		Command string `json:"option,omitempty" default:"mkdir -p /sky/agent && cp -r /skywalking/agent/* /sky/agent"`
+	// todo: deal with plugins
+}
+
+func (r *SwAgentReconciler) setOrAddEnv(swAgent *operatorv1alpha1.SwAgent, envKey string, envValue string) {
+	if !r.setEnvIfExists(&swAgent.Spec.JavaSidecar.Env, envKey, envValue) {
+		javaToolOptionsEnv := corev1.EnvVar{
+			Name:  envKey,
+			Value: envValue,
+		}
+		swAgent.Spec.JavaSidecar.Env = append(swAgent.Spec.JavaSidecar.Env, javaToolOptionsEnv)
 	}
+}
+
+func (r *SwAgentReconciler) setEnvIfExists(envs *[]corev1.EnvVar, envKey string, envValue string) bool {
+	for _, env := range *envs {
+		if strings.EqualFold(env.Name, envKey) {
+			env.Value = envValue
+			return true
+		}
+	}
+	return false
 }
 
 const (

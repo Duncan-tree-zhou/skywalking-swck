@@ -69,6 +69,7 @@ func (r *SwAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// TODO: check namespace annotation "swck-injection=true"
 
+	// TODO: move to validate webhook
 	// setup default values
 	r.setDefault(swAgent)
 
@@ -254,13 +255,30 @@ func (r *SwAgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *SwAgentReconciler) setDefault(swAgent *operatorv1alpha1.SwAgent) {
-	if nil != swAgent && len(swAgent.Spec.Selector) == 0 {
+	if nil != swAgent {
 		if len(swAgent.Spec.Selector) == 0 {
 			if swAgent.Spec.Selector == nil {
 				swAgent.Spec.Selector = make(map[string]string)
 			}
 			swAgent.Spec.Selector[LabelAutoUpdate] = "true"
 			swAgent.Spec.Selector[LabelJavaAgent] = "true"
+		}
+		if len(swAgent.Spec.ContainerMatcher) == 0 {
+			swAgent.Spec.ContainerMatcher = ".*"
+		}
+
+		// default values for java sidecar
+		if len(swAgent.Spec.JavaSidecar.Name) == 0 {
+			swAgent.Spec.JavaSidecar.Name = "inject-skywalking-agent"
+		}
+		if len(swAgent.Spec.JavaSidecar.Image) == 0 {
+			swAgent.Spec.JavaSidecar.Image = "apache/skywalking-java-agent:8.8.0-java8"
+		}
+		if len(swAgent.Spec.JavaSidecar.Command) == 0 {
+			if swAgent.Spec.JavaSidecar.Command == nil {
+				swAgent.Spec.JavaSidecar.Command = []string{}
+			}
+			swAgent.Spec.JavaSidecar.Command = append(swAgent.Spec.JavaSidecar.Command, "sh")
 		}
 		if len(swAgent.Spec.JavaSidecar.Args) == 0 {
 			if swAgent.Spec.JavaSidecar.Args == nil {
@@ -269,13 +287,26 @@ func (r *SwAgentReconciler) setDefault(swAgent *operatorv1alpha1.SwAgent) {
 			swAgent.Spec.JavaSidecar.Args = append(swAgent.Spec.JavaSidecar.Args, "-c")
 			swAgent.Spec.JavaSidecar.Args = append(swAgent.Spec.JavaSidecar.Args, "mkdir -p /sky/agent && cp -r /skywalking/agent/* /sky/agent")
 		}
-		if len(swAgent.Spec.JavaSidecar.Command) == 0 {
-			if swAgent.Spec.JavaSidecar.Command == nil {
-				swAgent.Spec.JavaSidecar.Command = []string{}
-			}
-			swAgent.Spec.JavaSidecar.Command = append(swAgent.Spec.JavaSidecar.Command, "sh")
-		}
 		r.setOrAddEnv(swAgent, "JAVA_TOOL_OPTIONS", " -javaagent:/sky/agent/skywalking-agent.jar")
+
+		// default values for shared volume
+		if len(swAgent.Spec.SharedVolume.Name) == 0 {
+			swAgent.Spec.SharedVolume.Name = "sky-agent"
+		}
+		if len(swAgent.Spec.SharedVolume.MountPath) == 0 {
+			swAgent.Spec.SharedVolume.MountPath = "/sky/agent"
+		}
+
+		// default values for agent configmap
+		if len(swAgent.Spec.SwConfigMap.Name) == 0 {
+			swAgent.Spec.SwConfigMap.Name = "java-agent-configmap-volume"
+		}
+		if len(swAgent.Spec.SwConfigMap.VolumeName) == 0 {
+			swAgent.Spec.SwConfigMap.VolumeName = "skywalking-swck-java-agent-configmap"
+		}
+		if len(swAgent.Spec.SwConfigMap.VolumeMountPath) == 0 {
+			swAgent.Spec.SwConfigMap.VolumeMountPath = "/sky/agent/config"
+		}
 
 	}
 

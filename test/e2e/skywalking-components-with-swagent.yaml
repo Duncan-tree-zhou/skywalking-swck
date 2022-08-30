@@ -88,5 +88,3 @@ spec:
   optionalPlugins:
     - "webflux"
     - "cloud-gateway-2.1.x"
-  optionalReporterPlugins:
-    - "kafka"
